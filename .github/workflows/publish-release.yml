@@ -1,22 +1,17 @@
 name: Публикация сборки в релиз
 
-# APK лежит на leshtm.run.place, откуда его забирает этот воркфлоу и
-# складывает в GitHub-релиз. Зачем так: приложение качает обновление по
-# HTTPS с нормальным сертификатом, а не по зашитому HTTP-адресу, и
-# отдаёт его с подписью GitHub.
+# Сборки лежат в папке builds: APK и рядом файл version-<сборка>.json с
+# описанием этой сборки — номер, смысловая версия, ссылка на ассет релиза
+# и хеш файла. Воркфлоу сверяет хеш и делает из них GitHub-релиз.
 #
-# Запуск вручную (workflow_dispatch) с номером сборки и хешем файла.
-# Хеш сверяется до создания релиза: файл, не совпавший с заявленным,
-# релиз не получает.
+# Запуск вручную (workflow_dispatch) с номером сборки. Внешний хостинг для
+# этого не нужен: всё нужное лежит в самом репозитории.
 
 on:
   workflow_dispatch:
     inputs:
       version:
         description: Сборка без префикса v, например 0.8.7.55
-        required: true
-      sha256:
-        description: SHA-256 файла APK, 64 символа
         required: true
 
 permissions:
@@ -26,28 +21,45 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      # Без клонирования репозитория на диске раннера нет скрипта
-      # .github/make-version-json.py — он лежит именно в репозитории.
       - uses: actions/checkout@v4
 
-      - name: Скачать сборку и сверить хеш
+      - name: Взять сборку и сверить хеш
         env:
           BUILD_VERSION: ${{ inputs.version }}
-          EXPECTED_SHA: ${{ inputs.sha256 }}
         run: |
           set -euo pipefail
-          curl -fsSL -o energy.apk "http://leshtm.run.place/energy-${BUILD_VERSION}.apk"
-          curl -fsSL -o upstream-version.json "http://leshtm.run.place/version.json"
-          echo "${EXPECTED_SHA}  energy.apk" | sha256sum -c -
+          cp "builds/energy-${BUILD_VERSION}.apk" energy.apk
+          cp "builds/version-${BUILD_VERSION}.json" version.json
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
 
-      - name: Собрать свой version.json
-        env:
-          BUILD_VERSION: ${{ inputs.version }}
-          EXPECTED_SHA: ${{ inputs.sha256 }}
-          REPO_SLUG: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          python3 .github/make-version-json.py
+          version = os.environ["BUILD_VERSION"]
+
+          with open("version.json", encoding="utf-8") as f:
+              d = json.load(f)
+
+          with open("energy.apk", "rb") as f:
+              actual = hashlib.sha256(f.read()).hexdigest()
+
+          if actual != d.get("sha256"):
+              sys.exit("APK не совпадает с хешем из version.json: %s != %s"
+                       % (actual, d.get("sha256")))
+
+          url = d.get("url", "")
+          if "/v%s/" % version not in url:
+              sys.exit("ссылка %s указывает не на тег v%s" % (url, version))
+
+          if not str(d.get("versionCode", "")).isdigit():
+              sys.exit("versionCode не число: %r" % d.get("versionCode"))
+
+          with open("notes.md", "w", encoding="utf-8") as f:
+              f.write((d.get("notes") or "Сборка %s." % version) + "\n\n")
+              f.write("Номер сборки %s, файл `energy-%s.apk`.\n"
+                      % (d["versionCode"], version))
+          PY
 
       - name: Создать или обновить релиз
         env:
