@@ -1,0 +1,67 @@
+name: Публикация сборки в релиз
+
+# APK лежит на leshtm.run.place, откуда его забирает этот воркфлоу и
+# складывает в GitHub-релиз. Зачем так: приложение качает обновление по
+# HTTPS с нормальным сертификатом, а не по зашитому HTTP-адресу, и
+# отдаёт его с подписью GitHub.
+#
+# Запуск вручную (workflow_dispatch) с номером сборки и хешем файла.
+# Хеш сверяется до создания релиза: файл, не совпавший с заявленным,
+# релиз не получает.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Сборка без префикса v, например 0.8.7.55
+        required: true
+      sha256:
+        description: SHA-256 файла APK, 64 символа
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Скачать сборку и сверить хеш
+        env:
+          BUILD_VERSION: ${{ inputs.version }}
+          EXPECTED_SHA: ${{ inputs.sha256 }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o energy.apk "http://leshtm.run.place/energy-${BUILD_VERSION}.apk"
+          curl -fsSL -o upstream-version.json "http://leshtm.run.place/version.json"
+          echo "${EXPECTED_SHA}  energy.apk" | sha256sum -c -
+
+      - name: Собрать свой version.json
+        env:
+          BUILD_VERSION: ${{ inputs.version }}
+          EXPECTED_SHA: ${{ inputs.sha256 }}
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 .github/make-version-json.py
+
+      - name: Создать или обновить релиз
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_VERSION: ${{ inputs.version }}
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="v${BUILD_VERSION}"
+          if gh release view "$tag" --repo "${REPO_SLUG}" >/dev/null 2>&1; then
+            # Релиз уже есть — перекладываем файлы поверх, чтобы повторный
+            # запуск ничего не ломал и не плодил дублей.
+            gh release upload "$tag" energy.apk version.json \
+              --repo "${REPO_SLUG}" --clobber
+            echo "Релиз $tag уже был — файлы перезалиты."
+          else
+            gh release create "$tag" energy.apk version.json \
+              --repo "${REPO_SLUG}" \
+              --title "Энергия ${BUILD_VERSION}" \
+              --notes-file notes.md
+          fi
