@@ -26,6 +26,10 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      # Без клонирования репозитория на диске раннера нет скрипта
+      # .github/make-version-json.py — он лежит именно в репозитории.
+      - uses: actions/checkout@v4
+
       - name: Скачать сборку и сверить хеш
         env:
           BUILD_VERSION: ${{ inputs.version }}
