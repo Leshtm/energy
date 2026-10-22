@@ -28,7 +28,7 @@ jobs:
           BUILD_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          cp "builds/energy-${BUILD_VERSION}.apk" energy.apk
+          cp "builds/energy-${BUILD_VERSION}.apk" "energy-${BUILD_VERSION}.apk"
           cp "builds/version-${BUILD_VERSION}.json" version.json
           python3 - <<'PY'
           import hashlib
@@ -37,28 +37,32 @@ jobs:
           import sys
 
           version = os.environ["BUILD_VERSION"]
+          apk = "energy-%s.apk" % version
 
           with open("version.json", encoding="utf-8") as f:
               d = json.load(f)
 
-          with open("energy.apk", "rb") as f:
+          with open(apk, "rb") as f:
               actual = hashlib.sha256(f.read()).hexdigest()
 
           if actual != d.get("sha256"):
               sys.exit("APK не совпадает с хешем из version.json: %s != %s"
                        % (actual, d.get("sha256")))
 
+          # Ссылка из version.json обязана указывать на тот файл и тот тег,
+          # которые выкладывает этот воркфлоу: иначе приложение скачает
+          # не то, что обещали.
           url = d.get("url", "")
-          if "/v%s/" % version not in url:
-              sys.exit("ссылка %s указывает не на тег v%s" % (url, version))
+          if "/v%s/" % version not in url or not url.endswith("/" + apk):
+              sys.exit("ссылка %s указывает не на файл %s тега v%s"
+                       % (url, apk, version))
 
           if not str(d.get("versionCode", "")).isdigit():
               sys.exit("versionCode не число: %r" % d.get("versionCode"))
 
           with open("notes.md", "w", encoding="utf-8") as f:
               f.write((d.get("notes") or "Сборка %s." % version) + "\n\n")
-              f.write("Номер сборки %s, файл `energy-%s.apk`.\n"
-                      % (d["versionCode"], version))
+              f.write("Номер сборки %s, файл `%s`.\n" % (d["versionCode"], apk))
           PY
 
       - name: Создать или обновить релиз
@@ -69,14 +73,15 @@ jobs:
         run: |
           set -euo pipefail
           tag="v${BUILD_VERSION}"
+          apk="energy-${BUILD_VERSION}.apk"
           if gh release view "$tag" --repo "${REPO_SLUG}" >/dev/null 2>&1; then
             # Релиз уже есть — перекладываем файлы поверх, чтобы повторный
             # запуск ничего не ломал и не плодил дублей.
-            gh release upload "$tag" energy.apk version.json \
+            gh release upload "$tag" "$apk" version.json \
               --repo "${REPO_SLUG}" --clobber
             echo "Релиз $tag уже был — файлы перезалиты."
           else
-            gh release create "$tag" energy.apk version.json \
+            gh release create "$tag" "$apk" version.json \
               --repo "${REPO_SLUG}" \
               --title "Энергия ${BUILD_VERSION}" \
               --notes-file notes.md
